@@ -24,6 +24,85 @@ This standard applies to documents written by functional departments and clinica
    - Export/render to PDF or page images when available, then review margins, alignment, page numbers, line spacing, table placement, and orphaned signature blocks.
 5. Report any unresolved issue, such as missing fonts, ambiguous heading levels, or content that cannot fit the required signature spacing without user judgment.
 
+## Toolchain Method
+
+A concrete, reusable execution path. Pick whichever tools are installed on the host; each step has an Office-dependent and a LibreOffice-dependent variant so the method works with or without Microsoft Word.
+
+### Pipeline Overview
+
+```
+source (.doc/.docx/.pdf/text)
+   |  step 1  convert + extract text & structure
+   v
+.docx + plain text
+   |  step 2  rebuild formatting per standard (python-docx + OOXML)
+   v
+formatted .docx
+   |  step 3  render to PDF (update fields first)
+   v
+.pdf
+   |  step 4  render to PNG for visual inspection
+   v
+images -> programmatic + visual validation -> deliver
+```
+
+### Step 1 - Convert And Extract
+
+Read the source into editable `.docx` plus text. Always extract per-paragraph structure (font/size/alignment/style), not just plain text, so you can tell title from body from signature.
+
+- `.doc` (legacy binary) or `.pdf` source → `.docx`:
+  - With Microsoft Word: `pywin32` Word COM. `Documents.Open` then `SaveAs2(FileFormat=12)` for `.docx`; for PDF, Word COM `ExportAsFixedFormat` or LibreOffice `soffice --headless --convert-to docx`.
+  - Without Word (servers/CI): `soffice --headless --convert-to docx <file>`.
+- `.docx` source: read directly.
+- Plain text / pasted content: build a new `.docx`.
+- Extract text + structure: iterate `Document.Paragraphs`, recording `Range.Text`, `Style.NameLocal`, `Range.Font.NameFarEast/Name`, `Range.Font.Size`, `Alignment`.
+
+### Step 2 - Rebuild Formatting
+
+Do not patch the original; rebuild from the standard. Use `python-docx` for structure and write OOXML directly for anything `python-docx` cannot express.
+
+- Chinese fonts need explicit East Asian setting, otherwise text falls back to the default font:
+
+  ```python
+  def set_run_fonts(run, cn_font, size_pt):
+      run.font.name = "Times New Roman"          # ASCII / HAnsi
+      run.font.size = size_pt
+      run.font.color.rgb = RGBColor(0, 0, 0)     # standard requires black
+      rPr = run._element.get_or_add_rPr()
+      rFonts = rPr.find(qn('w:rFonts'))
+      rFonts.set(qn('w:eastAsia'), cn_font)      # Chinese text
+  ```
+
+- Fixed line spacing: `<w:spacing w:line="..." w:lineRule="exact"/>` where `line` is `pt * 20` twips (e.g. 28 pt → 560).
+- First-line indent / right indent by characters: `w:firstLineChars` / `w:rightChars` (`100` = 1 character).
+- Page-number field: `python-docx` has no field support, so write the OOXML sequence `<w:fldChar begin/>` + `<w:instrText> PAGE \* MERGEFORMAT </w:instrText>` + `<w:fldChar separate/>` + placeholder text + `<w:fldChar end/>`. Format as `- <PAGE> -`.
+- Odd/even page numbers: add `<w:evenAndOddHeaders/>` to `settings.xml` (the section-level setter alone is not enough), then set the odd footer right-aligned and the even footer left-aligned.
+- Map each format clause in this skill to one OOXML property — do not hardcode; one clause, one setting.
+
+### Step 3 - Render To PDF
+
+- With Word: `Documents.Open` → `Fields.Update()` (update all fields so page numbers compute) → update footer fields → `Repaginate()` → `ExportAsFixedFormat(ExportFormat=17)`.
+- Without Word: `soffice --headless --convert-to pdf <file>`.
+
+### Step 4 - Render To Images And Validate
+
+- `PyMuPDF (fitz)`: `page.get_pixmap(matrix=fitz.Matrix(150/72, 150/72))` → PNG at ~150 DPI. `Pillow` for cropping/magnifying regions.
+- Programmatic checks: `fitz get_text("dict")` returns each text run's `bbox` (`x0,y0,x1,y1`) in points; verify margins, indents, and right edges against the required values (e.g. signature right edge = page width − right margin − 2 characters; date right edge = page width − right margin).
+- Visual checks: render at least the first page, one middle page, and the last page; confirm no orphaned signature, correct alignment, and expected fonts.
+
+### Host Tool Inventory
+
+Prefer this resolution order per step (first available wins):
+
+| Need | Preferred | Fallback |
+|------|-----------|----------|
+| Convert `.doc`/`.pdf` → `.docx`, render `.docx` → `.pdf`, update fields | Word COM (`pywin32`) | LibreOffice (`soffice --headless`) |
+| Build/edit `.docx` | `python-docx` + direct OOXML | LibreOffice headless |
+| Render PDF → PNG, measure text coordinates | `PyMuPDF` | `poppler` (`pdftoppm`), `pdf2image` |
+| Image crop/magnify | `Pillow` | — |
+
+If a required Chinese font (e.g. `方正小标宋简体`, `仿宋_GB2312`) is not installed on the host, still write the font name into the styles/runs and report the font-availability risk in the delivery note — the layout stays correct; only the glyph rendering falls back.
+
 ## Required Format
 
 ### Paper And Scope
