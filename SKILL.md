@@ -28,6 +28,40 @@ This standard applies to documents written by functional departments and clinica
 
 A concrete, reusable execution path. Pick whichever tools are installed on the host; each step has an Office-dependent and a LibreOffice-dependent variant so the method works with or without Microsoft Word.
 
+### Prerequisites — Check First, Install If Missing
+
+This skill cannot run without its tools. Before doing anything else, verify each dependency is present; if any is missing, install it before proceeding. Do not attempt a step with a missing tool — it will silently produce wrong output (e.g. Chinese text falling back to the wrong font, or page numbers rendering as a literal "1").
+
+Run this check at the start of every task:
+
+```bash
+# Office / LibreOffice — at least ONE must be present (for .doc conversion, PDF render, field update)
+python -c "import win32com.client; w=win32com.client.gencache.EnsureDispatch('Word.Application'); print('Word OK'); w.Quit()" 2>&1
+soffice --version 2>&1 || libreoffice --version 2>&1
+
+# Python libraries — all three required
+python -c "import docx; print('python-docx', docx.__version__)" 2>&1
+python -c "import fitz; print('PyMuPDF', fitz.version[0])" 2>&1
+python -c "import PIL; print('Pillow', PIL.__version__)" 2>&1
+```
+
+Interpret the results:
+
+| Dependency | Required for | Install command (Windows) |
+|------------|--------------|---------------------------|
+| Microsoft Word + `pywin32` | `.doc`→`.docx`, render PDF, update page-number fields | Office installer; then `pip install pywin32` |
+| LibreOffice (`soffice`) | same as above when Word is absent | https://www.libreoffice.org/download (adds `soffice` to PATH) |
+| `python-docx` | build/edit `.docx`, write OOXML | `pip install python-docx` |
+| `PyMuPDF` (`fitz`) | render PDF→PNG, measure text coordinates | `pip install PyMuPDF` |
+| `Pillow` | crop/magnify images for visual checks | `pip install Pillow` |
+
+Rules:
+
+- Word and LibreOffice are **alternatives** — install exactly one. Prefer Word if the host already has Office; otherwise install LibreOffice.
+- `python-docx`, `PyMuPDF`, `Pillow` are **all required** — there is no alternative.
+- If any required dependency is missing, tell the user what to install, and stop — do not proceed and produce a half-formatted document.
+- Chinese fonts (`方正小标宋简体`, `仿宋_GB2312`, `楷体_GB2312`, `黑体`) are **not blockers** — the layout stays correct without them; only glyph rendering falls back. Still report which fonts are missing so the user can install them for exact output.
+
 ### Pipeline Overview
 
 ```
